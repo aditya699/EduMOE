@@ -111,22 +111,22 @@ class TrainingConfig:
     dropout: float = 0.1
     
     # Training config - tuned for RTX 5090
-    batch_size: int = 64
-    learning_rate: float = 2e-4
+    batch_size: int = 16
+    learning_rate: float = 3e-4
     max_epochs: int = 10
-    warmup_steps: int = 300
-    max_steps: Optional[int] = 10000     # Reduced target for 5-hour session
+    warmup_steps: int = 200
+    max_steps: Optional[int] = 5000
     gradient_accumulation_steps: int = 2
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     
     # Data config - SAME AS ORIGINAL
-    block_size: int = 1024
+    block_size: int = 512
     stride: int = 512
     
     # Logging & Monitoring - SAME AS ORIGINAL  
     eval_interval: int = 500
-    log_interval: int = 100
+    log_interval: int = 20
     save_interval: int = 5000
     light_save_interval: int = 1000
     
@@ -296,7 +296,7 @@ class TrainingManager:
     def _prepare_data(self) -> Tuple[DataLoader, DataLoader]:
         """Load and prepare WikiText-103 dataset - SAME AS ORIGINAL."""
         print("Loading WikiText-103 dataset...")
-        dataset = load_dataset("wikitext", "wikitext-103-raw-v1")
+        dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
         
         # Create datasets
         train_texts = [item['text'] for item in dataset['train'] if item['text'].strip()]
@@ -819,16 +819,16 @@ def main():
         n_head=8,
         
         # Training config - tuned
-        batch_size=64,
-        learning_rate=2e-4,
+        batch_size=16,
+        learning_rate=3e-4,
         max_epochs=10,              # Same as original  
-        warmup_steps=300,
-        max_steps=10000,            # Reduced for 5-hour target
+        warmup_steps=200,
+        max_steps=5000,
         gradient_accumulation_steps=2,
         
         # Everything else EXACTLY as your original
         eval_interval=500,
-        log_interval=100,
+        log_interval=20,
         save_interval=5000,
         light_save_interval=1000,
         
