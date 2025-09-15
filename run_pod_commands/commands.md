@@ -13,3 +13,12 @@
 7.deactivate
 
 8.ps aux | grep python
+
+9.Basic Requirements:
+
+torch
+transformers
+datasets
+wandb
+matplotlib
+numpy

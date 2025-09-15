@@ -104,36 +104,39 @@ class TrainingConfig:
     """Training configuration parameters."""
     # Model config - EXACTLY THE SAME AS YOUR ORIGINAL
     vocab_size: int = 50257
-    max_position_embeddings: int = 1024
-    n_embd: int = 512
-    n_layer: int = 12
+    max_position_embeddings: int = 512
+    n_embd: int = 256
+    n_layer: int = 6
     n_head: int = 8
     dropout: float = 0.1
     
-    # Training config - tuned for RTX 5090
+    # Training config - tuned for 5-hour run on RTX 5090
     batch_size: int = 16
     learning_rate: float = 3e-4
     max_epochs: int = 10
     warmup_steps: int = 200
-    max_steps: Optional[int] = 5000
-    gradient_accumulation_steps: int = 2
+    max_steps: Optional[int] = 200_000
+    gradient_accumulation_steps: int = 1
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     
     # Data config - SAME AS ORIGINAL
     block_size: int = 512
-    stride: int = 512
+    stride: int = 256
     
     # Logging & Monitoring - SAME AS ORIGINAL  
-    eval_interval: int = 500
-    log_interval: int = 20
+    eval_interval: int = 2000
+    log_interval: int = 50
     save_interval: int = 5000
     light_save_interval: int = 1000
     
     # Weights & Biases - SAME AS ORIGINAL
-    wandb_project: str = "gpt2-rtx5090-safe"
+    wandb_project: str = "gpt2-rtx5090-5hr"
     wandb_name: Optional[str] = None
     use_wandb: bool = True
+    
+    # AMP precision
+    amp_dtype: str = "float16"  # one of {"float16", "bfloat16"}
 
 
 class WikiTextDataset(Dataset):
@@ -144,43 +147,27 @@ class WikiTextDataset(Dataset):
         self.examples = []
         print("Tokenizing dataset with sliding windows...")
         
-        # We create windows of length block_size + 1 so that x,y are both length block_size
+        # Always build a single concatenated token stream with EOS separators,
+        # then take sliding windows across the whole stream. This keeps
+        # train/val construction consistent and avoids tiny per-text fragments.
         window_len = block_size + 1
-        
+        eos_id = getattr(tokenizer, 'eos_token_id', None)
+        all_tokens: List[int] = []
         for text in texts:
-            if not text.strip():
+            t = text.strip()
+            if not t:
                 continue
-            
-            tokens = tokenizer.encode(text.strip())
-            seq_len = len(tokens)
-            if seq_len < window_len:
-                continue
-            
-            for i in range(0, seq_len - window_len + 1, stride):
-                chunk = tokens[i:i + window_len]
-                self.examples.append(torch.tensor(chunk, dtype=torch.long))
-            
-            # Add a tail window if leftover doesn't align with stride
-            if (seq_len - window_len) % stride != 0:
-                tail = tokens[-window_len:]
-                self.examples.append(torch.tensor(tail, dtype=torch.long))
+            all_tokens.extend(tokenizer.encode(t))
+            if eos_id is not None:
+                all_tokens.append(eos_id)
         
-        # Fallback: if per-text windows produced nothing, concatenate all tokens and window globally
-        if len(self.examples) == 0:
-            print("No chunks created per-text. Falling back to concatenated sliding windows across all texts.")
-            all_tokens: List[int] = []
-            for text in texts:
-                t = text.strip()
-                if not t:
-                    continue
-                all_tokens.extend(tokenizer.encode(t))
-            if len(all_tokens) >= window_len:
-                for i in range(0, len(all_tokens) - window_len + 1, stride):
-                    chunk = all_tokens[i:i + window_len]
-                    self.examples.append(torch.tensor(chunk, dtype=torch.long))
-                if (len(all_tokens) - window_len) % stride != 0:
-                    tail = all_tokens[-window_len:]
-                    self.examples.append(torch.tensor(tail, dtype=torch.long))
+        if len(all_tokens) >= window_len:
+            for i in range(0, len(all_tokens) - window_len + 1, stride):
+                chunk = all_tokens[i:i + window_len]
+                self.examples.append(torch.tensor(chunk, dtype=torch.long))
+            if (len(all_tokens) - window_len) % stride != 0:
+                tail = all_tokens[-window_len:]
+                self.examples.append(torch.tensor(tail, dtype=torch.long))
         
         print(f"Total chunks created: {len(self.examples)}")
     
@@ -202,6 +189,9 @@ class TrainingManager:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
         
+        # Resolve AMP dtype
+        self.amp_dtype = torch.bfloat16 if str(self.config.amp_dtype).lower() == 'bfloat16' else torch.float16
+        
         # Initialize tokenizer - SAME AS ORIGINAL
         self.tokenizer = AutoTokenizer.from_pretrained('gpt2')
         if self.tokenizer.pad_token is None:
@@ -217,12 +207,15 @@ class TrainingManager:
         # Initialize model - SAME AS ORIGINAL
         model_config = self._create_model_config()
         self.model = GPT2Model(model_config).to(self.device)
+        # Propagate AMP dtype into model for internal generation autocast
+        setattr(self.model, 'amp_dtype', self.amp_dtype)
         print(f"Model has {self.model.get_num_params():,} parameters")
         
         # Initialize optimizer and scheduler - SAME AS ORIGINAL
         self.optimizer = self._create_optimizer()
         self.scheduler = self._create_scheduler()
-        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.device.type == 'cuda'), init_scale=2**12)
+        # New torch.amp API (suppresses deprecation warnings)
+        self.scaler = torch.amp.GradScaler('cuda', enabled=(self.device.type == 'cuda'), init_scale=2**12)
         
         # Training state - SAME AS ORIGINAL
         self.step = 0
@@ -278,6 +271,10 @@ class TrainingManager:
         wandb.watch(self.model, log="gradients", log_freq=1000)
         print(f"Initialized W&B run: {wandb.run.name}")
     
+    def _safe_exp(self, x, max_x=20.0):
+        """Exponentiate safely; returns inf if x exceeds max_x."""
+        return float(math.exp(x)) if x < max_x else float('inf')
+
     def _create_model_config(self):
         """Create model configuration from training config - SAME AS ORIGINAL."""
         from types import SimpleNamespace
@@ -296,7 +293,7 @@ class TrainingManager:
     def _prepare_data(self) -> Tuple[DataLoader, DataLoader]:
         """Load and prepare WikiText-103 dataset - SAME AS ORIGINAL."""
         print("Loading WikiText-103 dataset...")
-        dataset = load_dataset("wikitext", "wikitext-2-raw-v1")
+        dataset = load_dataset("wikitext", "wikitext-103-raw-v1")
         
         # Create datasets
         train_texts = [item['text'] for item in dataset['train'] if item['text'].strip()]
@@ -409,9 +406,9 @@ class TrainingManager:
         torch.save(checkpoint, filepath)
         print(f"Full checkpoint saved: {filepath}")
         
-        # Log checkpoint to W&B
-        if self.config.use_wandb:
-            wandb.save(filepath)
+        # Do NOT upload checkpoint to W&B (saves space)
+        # if self.config.use_wandb:
+        #     wandb.save(filepath)
     
     def cleanup_old_checkpoints(self, keep_last_n=3):
         """Clean up old checkpoints - SAME AS ORIGINAL."""
@@ -436,8 +433,8 @@ class TrainingManager:
         x, y = x.to(self.device), y.to(self.device)
         
         # Forward pass with AMP
-        with torch.cuda.amp.autocast(dtype=torch.float16):
-            outputs = self.model(x, labels=y)
+        with torch.amp.autocast('cuda', enabled=(self.device.type == 'cuda'), dtype=self.amp_dtype):
+            outputs = self.model(x, labels=x)
             loss = outputs['loss']
             
             # Scale loss for gradient accumulation
@@ -459,8 +456,13 @@ class TrainingManager:
                 x, y = batch
                 x, y = x.to(self.device), y.to(self.device)
                 
-                outputs = self.model(x, labels=y)
-                loss = outputs['loss']
+                if num_batches == 0:  # only first batch
+                    print("[DEBUG] eval batch x[0][:10] =", x[0][:10].tolist())
+                    print("[DEBUG] eval batch y[0][:10] =", y[0][:10].tolist())
+
+                with torch.amp.autocast('cuda', enabled=(self.device.type == 'cuda'), dtype=self.amp_dtype):
+                    outputs = self.model(x, labels=x)
+                    loss = outputs['loss']
                 
                 total_loss += loss.item()
                 num_batches += 1
@@ -483,12 +485,13 @@ class TrainingManager:
         
         # Generate
         with torch.no_grad():
-            generated = self.model.generate(
-                input_ids,
-                max_new_tokens=max_tokens,
-                temperature=0.8,
-                do_sample=True
-            )
+            with torch.amp.autocast('cuda', enabled=(self.device.type == 'cuda'), dtype=self.amp_dtype):
+                generated = self.model.generate(
+                    input_ids,
+                    max_new_tokens=max_tokens,
+                    temperature=0.8,
+                    do_sample=True
+                )
         
         # Decode
         generated_text = self.tokenizer.decode(generated[0], skip_special_tokens=True)
@@ -568,20 +571,18 @@ class TrainingManager:
                         val_loss = self.evaluate()
                         self.val_losses.append(val_loss)
                         
-                        # Calculate perplexity for better interpretability
-                        train_ppl = math.exp(min(avg_loss if 'avg_loss' in locals() else 10, 10))
-                        val_ppl = math.exp(min(val_loss, 10))
-                        
-                        # Log to W&B
+                        # Calculate perplexities with safe exp and aligned step logging
+                        train_ppl = self._safe_exp(avg_loss) if 'avg_loss' in locals() else None
+                        val_ppl = self._safe_exp(val_loss)
+
+                        print(f"[EVAL] step={self.step} | val_loss={val_loss:.4f} | val_ppl={val_ppl:.2f} | train_ppl={train_ppl:.2f}")
+
                         if self.config.use_wandb:
                             wandb.log({
                                 "eval/loss": val_loss,
                                 "eval/perplexity": val_ppl,
                                 "train/perplexity": train_ppl,
-                                "eval/step": self.step
-                            })
-                        
-                        print(f"Validation loss: {val_loss:.4f} | Perplexity: {val_ppl:.2f}")
+                            }, step=self.step)
                         
                         # Save best model
                         if val_loss < self.best_val_loss:
@@ -727,8 +728,11 @@ class GPT2Model(nn.Module):
         self.eval()
         with torch.no_grad():
             for _ in range(max_new_tokens):
-                outputs = self.forward(input_ids)
-                logits = outputs['logits'][:, -1, :] / temperature
+                # Forward under AMP to match training precision
+                with torch.amp.autocast('cuda', enabled=(input_ids.is_cuda), dtype=(getattr(self, 'amp_dtype', torch.float16))):
+                    outputs = self.forward(input_ids)
+                # Cast logits to float32 for numerically stable sampling ops
+                logits = outputs['logits'][:, -1, :].float() / temperature
                 
                 if do_sample:
                     probs = torch.softmax(logits, dim=-1)
@@ -813,26 +817,26 @@ def main():
     """SAFE RTX 5090 training - your original code with just batch size increase."""
     # Create training configuration - tuned for RTX 5090
     config = TrainingConfig(
-        # Model config - EXACTLY THE SAME
-        n_embd=512,
-        n_layer=12,
+        # Model config
+        n_embd=256,
+        n_layer=6,
         n_head=8,
         
-        # Training config - tuned
+        # Training config - 5-hour run
         batch_size=16,
         learning_rate=3e-4,
-        max_epochs=10,              # Same as original  
+        max_epochs=10,
         warmup_steps=200,
-        max_steps=5000,
-        gradient_accumulation_steps=2,
+        max_steps=200_000,
+        gradient_accumulation_steps=1,
         
         # Everything else EXACTLY as your original
-        eval_interval=500,
-        log_interval=20,
+        eval_interval=2000,
+        log_interval=50,
         save_interval=5000,
         light_save_interval=1000,
         
-        wandb_project="gpt2-rtx5090-safe",
+        wandb_project="gpt2-rtx5090-5hr",
         use_wandb=True
     )
     
