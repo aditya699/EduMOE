@@ -28,36 +28,49 @@ TODO:
 # Standard Library Imports
 # ==========================
 import math
-import time
 import os
-import glob
-import itertools
-from typing import Dict, List, Optional, Tuple
+from typing import Tuple
 
 # ==========================
 # Third-Party Libraries
 # ==========================
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-
-import matplotlib.pyplot as plt
-import numpy as np                
-import wandb
-from datasets import load_dataset
-from transformers import AutoTokenizer
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-# Import TrainingConfig from separate config module (supports both module and script execution)
+# Import trainer and config (pkg or script mode)
 try:
     from .config import TrainingConfig  # type: ignore
-except Exception:  # noqa: E722 - fallback when running as a script
+    from .trainer import TrainingManager  # type: ignore
+except Exception:  # noqa: E722 - fallback for script execution
     from config import TrainingConfig  # type: ignore
+    from trainer import TrainingManager  # type: ignore
+def main():
+    config = TrainingConfig()
+    print("GPT-2 v4 Modular Training")
+    print("=" * 60)
+    print(f"Model: {config.n_layer}L-{config.n_embd}d-{config.n_head}h")
+    print(f"Context: {config.block_size}")
+    print(f"Batch size: {config.batch_size} (x{config.gradient_accumulation_steps} grad accum)")
+    print(f"Max steps: {config.max_steps}")
+    print(f"AMP dtype: {config.amp_dtype}")
+    print("=" * 60)
 
-## Import dataset class from separate module
-try:
-    from .dataset import WikiTextDataset  # type: ignore
-except Exception:  # noqa: E722 - fallback when running as a script
-    from dataset import WikiTextDataset  # type: ignore
+    trainer = TrainingManager(config)
+    trainer.train()
+
+    print("\nFinal Evaluation:")
+    final_val_loss = trainer.evaluate()
+    final_ppl = math.exp(min(final_val_loss, 10))
+    print(f"Final validation loss: {final_val_loss:.4f}")
+    print(f"Final perplexity: {final_ppl:.2f}")
+
+    print("\nGenerated Samples:")
+    for prompt in ["The", "In the future", "Artificial intelligence"]:
+        sample = trainer.generate_sample(prompt, max_tokens=30)
+        print(f"Prompt: '{prompt}' -> {sample}")
+
+
+if __name__ == "__main__":
+    main()
+
