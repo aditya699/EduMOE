@@ -1,10 +1,10 @@
-# GPT-2 Implementation
+# Transformer Pretraining from Scratch
 
-A clean, modular implementation of GPT-2 (Generative Pre-trained Transformer 2) built from scratch in PyTorch, designed for training on WikiText-103 dataset with modern optimization techniques.
+A clean, modular implementation of transformer language model pretraining built from scratch in PyTorch, designed for training on WikiText-103 dataset with modern optimization techniques.
 
 ## Overview
 
-This implementation follows the original GPT-2 architecture as described in ["Language Models are Unsupervised Multitask Learners"](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) by Radford et al., with modern training optimizations and best practices.
+This implementation follows the transformer architecture for autoregressive language modeling, incorporating modern training optimizations and best practices for pretraining from scratch.
 
 ## Architecture
 
