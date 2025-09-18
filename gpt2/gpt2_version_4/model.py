@@ -8,7 +8,10 @@ NOTE:
 
 import torch
 import torch.nn as nn
-from .blocks import TransformerBlock
+try:
+    from .blocks import TransformerBlock  # type: ignore
+except Exception:  # noqa: E722 - fallback when running as a script
+    from blocks import TransformerBlock  # type: ignore
 
 class GPT2Model(nn.Module):
     """
@@ -120,4 +123,5 @@ class GPT2Model(nn.Module):
         return input_ids
 
 
-    
+    def get_num_params(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)

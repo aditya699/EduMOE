@@ -2,7 +2,6 @@
 Configuration for GPT-2 v4 training.
 
 NOTE:
-1.If you would use H100 or A100 please use bfloat16 instead of float16.
 
 """
 
@@ -46,7 +45,7 @@ class TrainingConfig:
     use_wandb: bool = True                              # Whether to use Weights & Biases logging
 
     # ===== Mixed Precision =====
-    amp_dtype: str = "float16"              # AMP (Automatic Mixed Precision) data type ("float16" or "bfloat16")
+    amp_dtype: str = "bfloat16"              # AMP (Automatic Mixed Precision) data type ("float16" or "bfloat16")
 
 
 # Default config instance

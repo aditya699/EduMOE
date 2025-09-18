@@ -1,8 +1,11 @@
 import torch
 import torch.nn as nn
-
-from .attention import CausalSelfAttention
-from .mlp import MLP
+try:
+    from .attention import CausalSelfAttention  # type: ignore
+    from .mlp import MLP  # type: ignore
+except Exception:  # noqa: E722 - fallback when running as a script
+    from attention import CausalSelfAttention  # type: ignore
+    from mlp import MLP  # type: ignore
 
 
 class TransformerBlock(nn.Module):

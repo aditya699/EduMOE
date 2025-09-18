@@ -17,7 +17,7 @@ try:
     from .config import TrainingConfig  # type: ignore
     from .dataset import WikiTextDataset  # type: ignore
     from .model import GPT2Model  # type: ignore
-except Exception:  # noqa: E722
+except Exception:  # noqa: E722 - fallback when running as a script
     from config import TrainingConfig  # type: ignore
     from dataset import WikiTextDataset  # type: ignore
     from model import GPT2Model  # type: ignore
@@ -46,7 +46,8 @@ class TrainingManager:
 
         self.optimizer = self._create_optimizer()
         self.scheduler = self._create_scheduler()
-        self.scaler = torch.amp.GradScaler('cuda', enabled=(self.device.type == 'cuda'), init_scale=2**12)
+        # Grad scaler for mixed precision
+        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.device.type == 'cuda'), init_scale=2**12)
 
         self.step = 0
         self.epoch = 0
@@ -215,7 +216,7 @@ class TrainingManager:
         self.model.train()
         x, y = batch
         x, y = x.to(self.device), y.to(self.device)
-        with torch.amp.autocast('cuda', enabled=(self.device.type == 'cuda'), dtype=self.amp_dtype):
+        with torch.cuda.amp.autocast(enabled=(self.device.type == 'cuda'), dtype=self.amp_dtype):
             outputs = self.model(x, labels=x)
             loss = outputs['loss']
             loss = loss / max(1, self.config.gradient_accumulation_steps)
@@ -230,7 +231,7 @@ class TrainingManager:
             for batch in self.val_loader:
                 x, y = batch
                 x, y = x.to(self.device), y.to(self.device)
-                with torch.amp.autocast('cuda', enabled=(self.device.type == 'cuda'), dtype=self.amp_dtype):
+                with torch.cuda.amp.autocast(enabled=(self.device.type == 'cuda'), dtype=self.amp_dtype):
                     outputs = self.model(x, labels=x)
                     loss = outputs['loss']
                 total_loss += float(loss.item())
@@ -269,10 +270,27 @@ class TrainingManager:
                 accumulated_loss += loss
 
                 if (batch_idx + 1) % max(1, self.config.gradient_accumulation_steps) == 0:
+                    # Unscale, clip, and guard against non-finite gradients
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
+                    total_norm = 0.0
+                    found_inf = False
+                    with torch.no_grad():
+                        for p in self.model.parameters():
+                            if p.grad is None:
+                                continue
+                            param_norm = p.grad.data.float().norm(2)
+                            if torch.isnan(param_norm) or torch.isinf(param_norm):
+                                found_inf = True
+                                break
+                            total_norm += param_norm.item() ** 2
+                    if not found_inf:
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        # Skip optimizer step and reset scaler on inf/nan
+                        self.optimizer.zero_grad(set_to_none=True)
+                        self.scaler.update(new_scale=max(self.scaler.get_scale() / 2, 1.0))
                     self.scheduler.step()
                     self.optimizer.zero_grad()
                     self.step += 1

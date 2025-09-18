@@ -46,6 +46,13 @@ except Exception:  # noqa: E722 - fallback for script execution
     from config import TrainingConfig  # type: ignore
     from trainer import TrainingManager  # type: ignore
 def main():
+    # Enable TF32 for improved stability/perf on Ampere+ GPUs
+    if torch.cuda.is_available():
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        except Exception:
+            pass
     config = TrainingConfig()
     print("GPT-2 v4 Modular Training")
     print("=" * 60)

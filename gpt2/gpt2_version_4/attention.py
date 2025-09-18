@@ -45,18 +45,15 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
 
-        # Scaled dot-product attention
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # [B, nh, T, T]
-
-        # Apply causal mask (only keep lower triangle)
-        att = att.masked_fill(self.causal_mask[:, :, :T, :T] == 0, float("-inf"))
-
-        # Softmax over keys
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-
-        # Weighted sum of values
-        y = att @ v  # [B, nh, T, hd]
+        # Use PyTorch's scaled_dot_product_attention with causal masking for better stability
+        # sdpa handles scaling, softmax, masking, and dropout internally in a numerically stable way
+        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=True):
+            y = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=None,
+                dropout_p=self.attn_dropout.p if self.training else 0.0,
+                is_causal=True,
+            )  # [B, nh, T, hd]
 
         # Recombine heads
         y = y.transpose(1, 2).contiguous().view(B, T, C)
