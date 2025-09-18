@@ -1,4 +1,4 @@
-# Transformer Pretraining from Scratch
+# Pretraining from Scratch
 
 A clean, modular implementation of transformer language model pretraining built from scratch in PyTorch, designed for training on WikiText-103 dataset with modern optimization techniques.
 
