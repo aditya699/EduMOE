@@ -248,4 +248,6 @@ limitations under the License.
 
 ---
 
-*This implementation prioritizes code clarity, training stability, and modern PyTorch best practices while maintaining fidelity to the original GPT-2 architecture.*
+Presentation Link: https://claude.ai/public/artifacts/aba729e2-9524-4642-9082-e3e3630bd1e6
+
+*This implementation prioritizes code clarity, training stability, and modern PyTorch best practices while maintaining fidelity to the original GPT-2 architecture.
