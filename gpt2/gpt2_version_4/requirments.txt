@@ -4,3 +4,6 @@ datasets
 wandb
 matplotlib
 numpy
+azure-storage-blob
+python-dotenv
+tqdm
