@@ -1,3 +1,13 @@
+"""
+NOTE:
+1.⚖️ Scale Jump
+
+From 100M → 5.3B tokens.
+
+That's ~53X more data.
+"""
+
+
 import json
 import os
 

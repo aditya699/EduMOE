@@ -24,4 +24,4 @@ matplotlib
 numpy
 
 
-#3.nohup python -u dataset.py > training.log 2>&1 &
+#3.nohup python -u transform_dataset.py > training.log 2>&1 &
