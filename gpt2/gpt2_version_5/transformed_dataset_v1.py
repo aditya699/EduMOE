@@ -44,6 +44,7 @@ import numpy as np
 from transformers import GPT2TokenizerFast as GPT2Tokenizer
 from tqdm import tqdm
 import os
+import time
 from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
 
@@ -74,71 +75,80 @@ class LocalTokenizer:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
     
-    def download_from_blob(self, blob_name, local_path, max_bytes=None):
-        """Download file from Azure Blob Storage with resume capability"""
+    def download_from_blob(self, blob_name, local_path, max_bytes=None, max_retries=5):
+        """Download file from Azure Blob Storage with resume capability and retry logic"""
         
         if not self.conn_str or not self.container_name:
             print("WARNING: No Azure credentials provided, expecting local file")
             return os.path.exists(local_path)
         
-        try:
-            blob_service = BlobServiceClient.from_connection_string(self.conn_str)
-            blob_client = blob_service.get_blob_client(
-                container=self.container_name, 
-                blob=blob_name
-            )
-            
-            # Get blob properties
-            properties = blob_client.get_blob_properties()
-            total_size = properties.size
-            download_size = min(max_bytes, total_size) if max_bytes else total_size
-            
-            # Check if file exists and get current size
-            start_byte = 0
-            if os.path.exists(local_path):
-                current_size = os.path.getsize(local_path)
-                if current_size >= download_size:
-                    print(f"COMPLETE: {local_path} already fully downloaded ({current_size / (1024**2):.1f} MB)")
-                    return True
-                elif current_size > 0:
-                    start_byte = current_size
-                    print(f"RESUMING: Download from {start_byte / (1024**2):.1f} MB")
-            
-            print(f"DOWNLOADING: {blob_name} from Azure...")
-            print(f"Total blob size: {total_size / (1024**3):.2f} GB")
-            if max_bytes:
-                print(f"Downloading first {download_size / (1024**2):.1f} MB only")
-            
-            # Open file in append mode if resuming, write mode if new
-            mode = 'ab' if start_byte > 0 else 'wb'
-            
-            with open(local_path, mode) as f:
-                # Calculate how much we still need to download
-                remaining = download_size - start_byte
+        for retry_attempt in range(max_retries):
+            try:
+                blob_service = BlobServiceClient.from_connection_string(self.conn_str)
+                blob_client = blob_service.get_blob_client(
+                    container=self.container_name, 
+                    blob=blob_name
+                )
                 
-                if max_bytes:
-                    # For partial downloads, just get the remaining chunk
-                    stream = blob_client.download_blob(offset=start_byte, length=remaining)
-                    f.write(stream.readall())
-                else:
-                    # For full downloads, stream with progress bar
-                    stream = blob_client.download_blob(offset=start_byte, length=remaining)
+                # Get blob properties
+                properties = blob_client.get_blob_properties()
+                total_size = properties.size
+                download_size = min(max_bytes, total_size) if max_bytes else total_size
+                
+                # Check if file exists and get current size
+                start_byte = 0
+                if os.path.exists(local_path):
+                    current_size = os.path.getsize(local_path)
+                    if current_size >= download_size:
+                        print(f"COMPLETE: {local_path} already fully downloaded ({current_size / (1024**2):.1f} MB)")
+                        return True
+                    elif current_size > 0:
+                        start_byte = current_size
+                        print(f"RESUMING: Download from {start_byte / (1024**2):.1f} MB (Attempt {retry_attempt + 1}/{max_retries})")
+                
+                if retry_attempt == 0:
+                    print(f"DOWNLOADING: {blob_name} from Azure...")
+                    print(f"Total blob size: {total_size / (1024**3):.2f} GB")
+                    if max_bytes:
+                        print(f"Downloading first {download_size / (1024**2):.1f} MB only")
+                
+                # Open file in append mode if resuming, write mode if new
+                mode = 'ab' if start_byte > 0 else 'wb'
+                
+                with open(local_path, mode) as f:
+                    # Calculate how much we still need to download
+                    remaining = download_size - start_byte
                     
-                    with tqdm(total=download_size, initial=start_byte, unit='B', unit_scale=True, desc="Downloading") as pbar:
-                        for chunk in stream.chunks():
-                            f.write(chunk)
-                            pbar.update(len(chunk))
-            
-            final_size = os.path.getsize(local_path)
-            print(f"SUCCESS: Download complete - {final_size / (1024**2):.1f} MB saved to {local_path}")
-            return True
-            
-        except Exception as e:
-            current_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
-            print(f"ERROR: Download failed - {e}")
-            print(f"SAVED: Partial download - {current_size / (1024**2):.1f} MB")
-            print(f"TIP: Run again to resume from where it stopped")
-            return False
+                    if max_bytes:
+                        # For partial downloads, just get the remaining chunk
+                        stream = blob_client.download_blob(offset=start_byte, length=remaining)
+                        f.write(stream.readall())
+                    else:
+                        # For full downloads, stream with progress bar
+                        stream = blob_client.download_blob(offset=start_byte, length=remaining)
+                        
+                        with tqdm(total=download_size, initial=start_byte, unit='B', unit_scale=True, desc="Downloading") as pbar:
+                            for chunk in stream.chunks():
+                                f.write(chunk)
+                                pbar.update(len(chunk))
+                
+                final_size = os.path.getsize(local_path)
+                print(f"SUCCESS: Download complete - {final_size / (1024**2):.1f} MB saved to {local_path}")
+                return True
+                
+            except Exception as e:
+                current_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+                print(f"ERROR: Download failed on attempt {retry_attempt + 1}/{max_retries} - {e}")
+                print(f"SAVED: Partial download - {current_size / (1024**2):.1f} MB")
+                
+                if retry_attempt < max_retries - 1:
+                    wait_time = min(2 ** retry_attempt, 60)  # Exponential backoff, max 60 seconds
+                    print(f"RETRYING: Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                else:
+                    print(f"FAILED: All {max_retries} retry attempts exhausted")
+                    print(f"TIP: Run again to resume from {current_size / (1024**2):.1f} MB")
+                    return False
     
     def process_and_save(self, input_file, train_split=0.9, batch_size=500):
         """Process input file with batched tokenization for massive speedup"""
